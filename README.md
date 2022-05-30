@@ -1,5 +1,5 @@
 # HipID
-Body pressure authentification by SSL
+Body pressure authentication by SSL
 
 # Structure
 ```
