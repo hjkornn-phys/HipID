@@ -13,20 +13,23 @@ class Dataset(data.Dataset):
         name_lookup_table,
         exts=["csv"],
         use_name_as_label=False,
+        is_gen_data=False,
     ):
         super().__init__()
         self.folder = folder  # ./8x8_Data/name/images
         self.name = folder.split("\\")[-2]
+        self.is_gen_data = is_gen_data
         if use_name_as_label:
             self.name_lookup_table = {name: name for name in name_lookup_table}
         else:
             self.name_lookup_table = name_lookup_table
         self.image_size = image_size
         self.paths = [p for ext in exts for p in Path(f"{folder}").glob(f"**/*.{ext}")]
-        self.pos_labels = torch.as_tensor(
-            np.array([(int(str(p).split("\\")[-1][2]) - 1) for p in self.paths]),
-            dtype=torch.long,
-        )
+        if self.is_gen_data is False:
+            self.pos_labels = torch.as_tensor(
+                np.array([(int(str(p).split("\\")[-1][2]) - 1) for p in self.paths]),
+                dtype=torch.long,
+            )
         self.transform = transforms.Compose(
             [
                 # transforms.Resize(image_size),
@@ -41,13 +44,19 @@ class Dataset(data.Dataset):
 
     def __getitem__(self, index):
         path = self.paths[index]
-        pos_label = self.pos_labels[index]
         img = np.genfromtxt(path, dtype=np.int16, delimiter=",")  # 0~1023
-        return (
-            torch.div(self.transform(img), 1023),
-            self.name_lookup_table[self.name],
-            pos_label,
-        )  # 0~1 로 normalize
+        if self.is_gen_data:
+            return (
+                torch.div(self.transform(img), 1023),
+                self.name_lookup_table[self.name],
+            )  # 0~1 로 normalize
+        else:
+            pos_label = self.pos_labels[index]
+            return (
+                torch.div(self.transform(img), 1023),
+                self.name_lookup_table[self.name],
+                pos_label,
+            )  # 0~1 로 normalize
 
 
 def make_total_dataset(
@@ -57,16 +66,14 @@ def make_total_dataset(
     exts=["csv"],
     use_name_as_label=False,
     is_train=True,
+    use_gen_data=False,
 ):
-    """
-    folder: 8x8_Data의 상위폴더 지정
-    """
     PATH = str(Path.cwd())
     Bool_dict = {True: "images", False: "test_images"}
     if folder is None:
         folder = PATH
     names = name_lookup_table.keys()
-    return data.ConcatDataset(
+    total_dataset = data.ConcatDataset(
         [
             Dataset(
                 f"{folder}\8x8_Data\{name}\{Bool_dict[is_train]}",
@@ -78,11 +85,33 @@ def make_total_dataset(
             for name in names
         ]
     )
+    if is_train and use_gen_data:
+        gen_dataset = data.ConcatDataset(
+            [
+                Dataset(
+                    f"{folder}\8x8_Data\{name}\gen_images",
+                    image_size=image_size,
+                    name_lookup_table=name_lookup_table,
+                    use_name_as_label=use_name_as_label,
+                    exts=exts,
+                    is_gen_data=True,
+                )
+                for name in names
+            ]
+        )
+        total_dataset = data.ConcatDataset([total_dataset, gen_dataset])
+    return total_dataset
 
 
 if __name__ == "__main__":
-    name_dict = {"Cham": 1, "Lee1": 2, "You": 3}
+    name_dict = {"002": 0, "003": 1}
     total_dataset = make_total_dataset(
-        8, name_dict, folder=None, exts=["csv"], use_name_as_label=False
+        8,
+        name_dict,
+        folder=None,
+        exts=["csv"],
+        use_name_as_label=False,
+        is_train=True,
+        use_gen_data=False,
     )
-    # print(total_dataset[1000])
+    print(total_dataset[500])
