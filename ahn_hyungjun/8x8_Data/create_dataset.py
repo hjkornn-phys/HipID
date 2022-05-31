@@ -57,6 +57,7 @@ def make_total_dataset(
     exts=["csv"],
     use_name_as_label=False,
     is_train=True,
+    use_gen_data=False,
 ):
     """
     folder: 8x8_Data의 상위폴더 지정
@@ -66,7 +67,7 @@ def make_total_dataset(
     if folder is None:
         folder = PATH
     names = name_lookup_table.keys()
-    return data.ConcatDataset(
+    total_dataset = data.ConcatDataset(
         [
             Dataset(
                 f"{folder}\8x8_Data\{name}\{Bool_dict[is_train]}",
@@ -78,11 +79,32 @@ def make_total_dataset(
             for name in names
         ]
     )
+    if is_train and use_gen_data:
+        gen_dataset = data.ConcatDataset(
+            [
+                Dataset(
+                    f"{folder}\8x8_Data\{name}\gen_images",
+                    image_size=image_size,
+                    name_lookup_table=name_lookup_table,
+                    use_name_as_label=use_name_as_label,
+                    exts=exts,
+                )
+                for name in names
+            ]
+        )
+        total_dataset = data.ConcatDataset([total_dataset, gen_dataset])
+    return total_dataset
 
 
 if __name__ == "__main__":
-    name_dict = {"Cham": 1, "Lee1": 2, "You": 3}
+    name_dict = {"0001": 0, "0002": 1, "0003": 2}
     total_dataset = make_total_dataset(
-        8, name_dict, folder=None, exts=["csv"], use_name_as_label=False
+        8,
+        name_dict,
+        folder=None,
+        exts=["csv"],
+        use_name_as_label=False,
+        is_train=True,
+        use_gen_data=True,
     )
-    # print(total_dataset[1000])
+    print(total_dataset[1000])
