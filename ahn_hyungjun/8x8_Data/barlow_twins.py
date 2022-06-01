@@ -107,8 +107,8 @@ class BarlowTwins(nn.Module):
         self.backbone = nn.DataParallel(self.backbone)
 
         if args.backbone_weights is not None:
-            backbone_weigths = torch.load("./best_results" / args.backbone_weights)
-            self.backbone.load_state_dict(backbone_weigths)
+            backbone_weights = torch.load("./best_results" / args.backbone_weights)
+            self.backbone.load_state_dict(backbone_weights["model"])
         self.backbone.linear = nn.Identity()
 
         # projector

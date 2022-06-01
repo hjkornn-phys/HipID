@@ -112,15 +112,15 @@ class BarlowTwins(nn.Module):
         self.args = args
         self.batch_size = self.args.batch_size
         self.backbone = ResNet(
-            num_blocks=list(map(int, args.backbone_num_blocks.split("-"))),
             in_channels=1,
             num_classes=args.pretext_num_classes,
-        )
+            num_blocks=list(map(int, args.backbone_num_blocks.split("-"))),
+          )
         self.backbone = nn.DataParallel(self.backbone)
 
         if args.backbone_weights is not None:
-            backbone_weigths = torch.load("./best_results" / args.backbone_weights)
-            self.backbone.load_state_dict(backbone_weigths)
+            backbone_weights = torch.load("./best_results" / args.backbone_weights)
+            self.backbone.load_state_dict(backbone_weights["model"])
         self.backbone.linear = nn.Identity()
 
         # projector
