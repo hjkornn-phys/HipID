@@ -45,7 +45,9 @@ class BasicBlock(nn.Module):
 
 # ResNet 클래스 정의
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, *, in_channels, num_classes):
+    def __init__(
+        self, block=BasicBlock, num_blocks=[2, 2, 2, 2], *, in_channels, num_classes
+    ):
         super(ResNet, self).__init__()
         self.in_planes = 64
 
@@ -82,7 +84,7 @@ class ResNet(nn.Module):
 
 def ResNet18(*, num_classes):
     model = ResNet(BasicBlock, [1, 1, 1, 1], in_channel=1, num_classes=num_classes)
-    print(torchsumm(model), (1, 8, 8), 100)
+    # print(torchsumm(model), (1, 8, 8), 100)
     return model
 
 
