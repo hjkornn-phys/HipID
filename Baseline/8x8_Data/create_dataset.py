@@ -14,11 +14,15 @@ class Dataset(data.Dataset):
         exts=["csv"],
         use_name_as_label=False,
         is_gen_data=False,
+        transform=None,
+        is_barlow_twins=False,
     ):
         super().__init__()
         self.folder = folder  # ./8x8_Data/name/images
         self.name = folder.split("\\")[-2]
         self.is_gen_data = is_gen_data
+        self.transform = transform
+        self.is_barlow_twins = is_barlow_twins
         if use_name_as_label:
             self.name_lookup_table = {name: name for name in name_lookup_table}
         else:
@@ -30,14 +34,15 @@ class Dataset(data.Dataset):
                 np.array([(int(str(p).split("\\")[-1][2]) - 1) for p in self.paths]),
                 dtype=torch.long,
             )
-        self.transform = transforms.Compose(
-            [
-                # transforms.Resize(image_size),
-                # transforms.RandomHorizontalFlip(),
-                # transforms.CenterCrop(image_size),
-                transforms.ToTensor(),
-            ]
-        )
+        if self.transform is None:
+            self.transform = transforms.Compose(
+                [
+                    # transforms.Resize(image_size),
+                    # transforms.RandomHorizontalFlip(),
+                    # transforms.CenterCrop(image_size),
+                    transforms.ToTensor(),
+                ]
+            )
 
     def __len__(self):
         return len(self.paths)
@@ -45,18 +50,26 @@ class Dataset(data.Dataset):
     def __getitem__(self, index):
         path = self.paths[index]
         img = np.genfromtxt(path, dtype=np.int16, delimiter=",")  # 0~1023
-        if self.is_gen_data:
+        if self.is_barlow_twins:
+            y1, y2 = self.transform(img)
             return (
-                torch.div(self.transform(img), 1023),
+                torch.div(y1, 1023),
+                torch.div(y2, 1023),
                 self.name_lookup_table[self.name],
             )  # 0~1 로 normalize
         else:
-            pos_label = self.pos_labels[index]
-            return (
-                torch.div(self.transform(img), 1023),
-                self.name_lookup_table[self.name],
-                pos_label,
-            )  # 0~1 로 normalize
+            if self.is_gen_data:
+                return (
+                    torch.div(self.transform(img), 1023),
+                    self.name_lookup_table[self.name],
+                )  # 0~1 로 normalize
+            else:
+                pos_label = self.pos_labels[index]
+                return (
+                    torch.div(self.transform(img), 1023),
+                    self.name_lookup_table[self.name],
+                    pos_label,
+                )  # 0~1 로 normalize
 
 
 def make_total_dataset(
@@ -67,6 +80,8 @@ def make_total_dataset(
     use_name_as_label=False,
     is_train=True,
     use_gen_data=False,
+    transform=None,
+    is_barlow_twins=False,
 ):
     PATH = str(Path.cwd())
     Bool_dict = {True: "images", False: "test_images"}
@@ -81,6 +96,8 @@ def make_total_dataset(
                 name_lookup_table=name_lookup_table,
                 use_name_as_label=use_name_as_label,
                 exts=exts,
+                transform=transform,
+                is_barlow_twins=is_barlow_twins,
             )
             for name in names
         ]
@@ -95,6 +112,8 @@ def make_total_dataset(
                     use_name_as_label=use_name_as_label,
                     exts=exts,
                     is_gen_data=True,
+                    transform=transform,
+                    is_barlow_twins=is_barlow_twins,
                 )
                 for name in names
             ]

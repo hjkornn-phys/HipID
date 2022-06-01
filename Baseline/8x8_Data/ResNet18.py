@@ -45,7 +45,9 @@ class BasicBlock(nn.Module):
 
 # ResNet 클래스 정의
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, *, in_channels, num_classes):
+    def __init__(
+        self, block=BasicBlock, num_blocks=[2, 2, 2, 2], *, in_channels, num_classes
+    ):
         super(ResNet, self).__init__()
         self.in_planes = 64
 
