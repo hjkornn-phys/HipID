@@ -84,7 +84,7 @@ class ResNet(nn.Module):
 
 def ResNet18(*, num_classes):
     model = ResNet(BasicBlock, [1, 1, 1, 1], in_channel=1, num_classes=num_classes)
-    # print(torchsumm(model), (1, 8, 8), 100)
+    print(torchsumm(model), (1, 8, 8), 100)
     return model
 
 
@@ -101,13 +101,14 @@ class Trainer:
         train_epochs=15,
         results_folder="./backbone_results",
         adjust_lr=True,
+        num_blocks=[2, 2, 2, 2],
     ) -> None:
         super().__init__()
         self.lookup_table = lookup_table
         self.num_classes = num_classes
         self.model = ResNet(
             BasicBlock,
-            [1, 1, 1, 1],
+            num_blocks=num_blocks,
             in_channels=in_channels,
             num_classes=self.num_classes,
         )
@@ -253,10 +254,11 @@ class Trainer:
 
 if __name__ == "__main__":
     trainer = Trainer(
-        {"Lee1": 0, "Lee2": 1, "Moon": 2, "Shin": 3, "You": 4},
+        {"002": 0, "003": 1, "004": 2, "005": 3, "006": 4},
         train_batch_size=32,
-        num_classes=5,
+        num_classes=5,  # 사람을 예측할 때는 사람의 수, pos 예측에는 8로 고정
         train_epochs=15,
+        num_blocks=[2, 2, 2, 2],
     )
     # trainer.load(10, "name")  # 10번째 model을 불러와서 추가적으로 train_epoch만큼 훈련시킴
-    trainer.train("cuda", pred_target="name")
+    trainer.train("cuda", pred_target="name")  # 자세를 예측할 때에는 pred_target='pos'
