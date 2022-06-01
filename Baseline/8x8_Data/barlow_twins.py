@@ -17,6 +17,14 @@ from PIL import ImageFilter
 
 parser = argparse.ArgumentParser(description="Barlow Twins Training")
 parser.add_argument(
+    "--backbone-num-blocks",
+    default="2-2-2-2",
+    type=str,
+    metavar="NUM_BLOCKS",
+    help="num_blocks of ResNet",
+)
+
+parser.add_argument(
     "--backbone_weights",
     default=None,
     type=Path,
@@ -74,7 +82,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--projector",
-    default="8192-8192-8192",
+    default="256-256-256",
     type=str,
     metavar="MLP",
     help="projector MLP",
@@ -103,7 +111,11 @@ class BarlowTwins(nn.Module):
         super().__init__()
         self.args = args
         self.batch_size = self.args.batch_size
-        self.backbone = ResNet(in_channels=1, num_classes=args.pretext_num_classes)
+        self.backbone = ResNet(
+            in_channels=1,
+            num_classes=args.pretext_num_classes,
+            num_blocks=list(map(int, args.backbone_num_blocks.split("-"))),
+          )
         self.backbone = nn.DataParallel(self.backbone)
 
         if args.backbone_weights is not None:
@@ -233,8 +245,8 @@ def main(gpu, name_lookup_table):
     if (args.checkpoint_dir / "checkpoint.pth").is_file():
         ckpt = torch.load(args.checkpoint_dir / "checkpoint.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
-        # model.load_state_dict(ckpt["model"])
-        # optimizer.load_state_dict(ckpt["optimizer"])
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
     else:
         start_epoch = 0
 
