@@ -15,14 +15,14 @@ class Dataset(data.Dataset):
         use_name_as_label=False,
         is_gen_data=False,
         transform=None,
-        is_barlo_twins=False,
+        is_barlow_twins=False,
     ):
         super().__init__()
         self.folder = folder  # ./8x8_Data/name/images
         self.name = folder.split("\\")[-2]
         self.is_gen_data = is_gen_data
         self.transform = transform
-        self.is_barlo_twins = is_barlo_twins
+        self.is_barlow_twins = is_barlow_twins
         if use_name_as_label:
             self.name_lookup_table = {name: name for name in name_lookup_table}
         else:
@@ -50,7 +50,7 @@ class Dataset(data.Dataset):
     def __getitem__(self, index):
         path = self.paths[index]
         img = np.genfromtxt(path, dtype=np.int16, delimiter=",")  # 0~1023
-        if self.is_barlo_twins:
+        if self.is_barlow_twins:
             y1, y2 = self.transform(img)
             return (
                 torch.div(y1, 1023),
@@ -97,7 +97,7 @@ def make_total_dataset(
                 use_name_as_label=use_name_as_label,
                 exts=exts,
                 transform=transform,
-                is_barlo_twins=is_barlow_twins,
+                is_barlow_twins=is_barlow_twins,
             )
             for name in names
         ]
@@ -113,7 +113,7 @@ def make_total_dataset(
                     exts=exts,
                     is_gen_data=True,
                     transform=transform,
-                    is_barlo_twins=is_barlow_twins,
+                    is_barlow_twins=is_barlow_twins,
                 )
                 for name in names
             ]
