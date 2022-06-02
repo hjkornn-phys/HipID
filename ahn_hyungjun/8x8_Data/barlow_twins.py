@@ -13,12 +13,21 @@ import json
 import math
 import random
 from PIL import ImageFilter
-
+from torch.utils import data
+import numpy as np
 
 parser = argparse.ArgumentParser(description="Barlow Twins Training")
 parser.add_argument(
+    "--backbone-num-blocks",
+    default="2-2-2-2",
+    type=str,
+    metavar="NUM_BLOCKS",
+    help="num_blocks of ResNet",
+)
+
+parser.add_argument(
     "--backbone_weights",
-    default=None,
+    default="resnet18-pred_pos-9classes-12.pt",
     type=Path,
     metavar="DIR",
     help="backbone weight filename (under best results)",
@@ -33,20 +42,20 @@ parser.add_argument(
 
 parser.add_argument(
     "--pretext-num-classes",
-    default=8,
+    default=9,
     type=int,
     metavar="N",
     help="Pose estimation num classes",
 )
 parser.add_argument(
     "--epochs",
-    default=1000,
+    default=100,
     type=int,
     metavar="N",
     help="number of total epochs to run",
 )
 parser.add_argument(
-    "--batch-size", default=2048, type=int, metavar="N", help="mini-batch size"
+    "--batch-size", default=64, type=int, metavar="N", help="mini-batch size"
 )
 parser.add_argument(
     "--learning-rate-weights",
@@ -74,13 +83,13 @@ parser.add_argument(
 )
 parser.add_argument(
     "--projector",
-    default="8192-8192-8192",
+    default="256-256-256",
     type=str,
     metavar="MLP",
     help="projector MLP",
 )
 parser.add_argument(
-    "--print-freq", default=100, type=int, metavar="N", help="print frequency"
+    "--print-freq", default=5, type=int, metavar="N", help="print frequency"
 )
 parser.add_argument(
     "--checkpoint-dir",
@@ -103,17 +112,25 @@ class BarlowTwins(nn.Module):
         super().__init__()
         self.args = args
         self.batch_size = self.args.batch_size
-        self.backbone = ResNet(in_channels=1, num_classes=args.pretext_num_classes)
-        self.backbone = nn.DataParallel(self.backbone)
+        self.backbone = ResNet(
+            num_blocks=list(map(int, args.backbone_num_blocks.split("-"))),
+            in_channels=1,
+            num_classes=args.pretext_num_classes,
+        )
+        # self.backbone = nn.DataParallel(self.backbone)
 
         if args.backbone_weights is not None:
             backbone_weights = torch.load("./best_results" / args.backbone_weights)
-            self.backbone.load_state_dict(backbone_weights["model"])
+            model_weights = {}
+            for k, v in backbone_weights["model"].items():
+                name = k[7:]  # remove `module.`
+                model_weights[name] = v
+            self.backbone.load_state_dict(model_weights)
         self.backbone.linear = nn.Identity()
 
         # projector
         projector_dims = list(map(int, args.projector.split("-")))
-        sizes = [256] + projector_dims
+        sizes = [64] + projector_dims
         layers = []
         for i in range(len(sizes) - 2):
             layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=False))
@@ -128,6 +145,8 @@ class BarlowTwins(nn.Module):
     def forward(self, y1, y2):
         z1 = self.projector(self.backbone(y1))
         z2 = self.projector(self.backbone(y2))
+        # print(z1.shape)    # 점검용
+        # print(z2.shape)    # 점검용
 
         # empirical cross-correlation matrix
         c = self.bn(z1).T @ self.bn(z2)
@@ -223,7 +242,7 @@ def main(gpu, name_lookup_table):
     model = torch.nn.DataParallel(model, device_ids=[gpu])
     optimizer = LARS(
         parameters,
-        lr=0,
+        lr=0.001,
         weight_decay=args.weight_decay,
         weight_decay_filter=True,
         lars_adaptation_filter=True,
@@ -233,8 +252,8 @@ def main(gpu, name_lookup_table):
     if (args.checkpoint_dir / "checkpoint.pth").is_file():
         ckpt = torch.load(args.checkpoint_dir / "checkpoint.pth", map_location="cpu")
         start_epoch = ckpt["epoch"]
-        # model.load_state_dict(ckpt["model"])
-        # optimizer.load_state_dict(ckpt["optimizer"])
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
     else:
         start_epoch = 0
 
@@ -242,10 +261,11 @@ def main(gpu, name_lookup_table):
         8,
         name_lookup_table=name_lookup_table,
         is_train=True,
-        use_gen_data=True,
+        use_gen_data=False,
         is_barlow_twins=True,
         transform=Transform(),
     )
+    print(len(dataset))
     # sampler = torch.utils.data.distributed.DistributedSampler(dataset)
     # assert args.batch_size % args.world_size == 0
     # per_device_batch_size = args.batch_size // args.world_size
@@ -256,7 +276,7 @@ def main(gpu, name_lookup_table):
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
         # sampler.set_epoch(epoch)
-        for step, ((y1, y2, *_)) in enumerate(loader, start=epoch * len(loader)):
+        for step, ((y1, y2, *_)) in enumerate(loader):
             y1 = y1.cuda(gpu, non_blocking=True)
             y2 = y2.cuda(gpu, non_blocking=True)
             adjust_learning_rate(args, optimizer, loader, step)
@@ -284,10 +304,8 @@ def main(gpu, name_lookup_table):
             optimizer=optimizer.state_dict(),
         )
         torch.save(state, args.checkpoint_dir / "checkpoint.pth")
-        # save final model
-        torch.save(
-            model.module.backbone.state_dict(), args.checkpoint_dir / "resnet18.pth"
-        )
+    # save final model
+    torch.save(model.module.backbone.state_dict(), args.checkpoint_dir / "resnet18.pth")
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
@@ -322,32 +340,30 @@ class Transform:
     def __init__(self):
         self.transform = transforms.Compose(
             [
-                # transforms.ToPILImage(),
-                # transforms.RandomResizedCrop(
-                #     8,
-                #     scale=(0.25, 1),
-                #     ratio=(1.0, 1.0),
-                #     interpolation=Resampling.NEAREST,
-                # ),
-                # transforms.RandomApply(
-                # [GaussianBlur(p=0.7)],
-                # ),
-                transforms.ToTensor()
+                transforms.ToTensor(),
+                transforms.RandomApply(
+                    torch.nn.ModuleList(
+                        [
+                            transforms.RandomResizedCrop(8, (0.25, 1), ratio=(1, 1)),
+                            transforms.GaussianBlur(3, sigma=(0.1, 2.0)),
+                        ]
+                    ),
+                    p=0.3,
+                ),
             ]
         )
         self.transform_prime = transforms.Compose(
             [
-                # transforms.ToPILImage(),
-                # transforms.RandomResizedCrop(
-                #     8,
-                #     scale=(0.25, 1),
-                #     ratio=(1.0, 1.0),
-                #     interpolation=Resampling.NEAREST,
-                # ),
-                # transforms.RandomApply(
-                # [GaussianBlur(p=0.7)],
-                # ),
-                transforms.ToTensor()
+                transforms.ToTensor(),
+                transforms.RandomApply(
+                    torch.nn.ModuleList(
+                        [
+                            transforms.RandomResizedCrop(8, (0.25, 1), ratio=(1, 1)),
+                            transforms.GaussianBlur(3, sigma=(0.1, 2.0)),
+                        ]
+                    ),
+                    p=0.3,
+                ),
             ]
         )
 
@@ -357,5 +373,93 @@ class Transform:
         return y1, y2
 
 
+class EmbExtractor(nn.Module):
+    def __init__(self, gpu, extract_emb, num_classes=None):
+        super().__init__()
+        self.extract_emb = extract_emb
+        args = parser.parse_args()
+        torch.cuda.device(gpu)
+        torch.backends.cudnn.benchmark = True
+        self.model = BarlowTwins(args)
+        self.model = torch.nn.DataParallel(self.model, device_ids=[gpu])  # module error
+        bt_weights = torch.load(args.checkpoint_dir / "checkpoint.pth")["model"]
+        self.model.load_state_dict(bt_weights)
+        self.model.eval()
+        if extract_emb is False:
+            self.fin_linear = nn.Linear(args.projector.split("-")[-1], num_classes)
+
+    def forward(self, x):
+        x = self.model.module.projector(self.model.module.backbone(x))
+        if self.extract_emb:
+            return x
+        x = self.fin_linear(x)
+        return x
+
+
+def emb_match(name_lookup_table, use_trainset, use_gen_data=False):
+    PATH = str(Path.cwd())
+    Path.mkdir(Path(f"{PATH}/embeddings"), exist_ok=True)
+    bool_dict = {True: "train", False: "test"}
+    emb_model = EmbExtractor("cuda", extract_emb=True)
+    ds = make_total_dataset(
+        8,
+        name_lookup_table=name_lookup_table,
+        is_train=use_trainset,
+        transform=None,
+        is_barlow_twins=False,
+        use_gen_data=use_gen_data,
+    )
+    dl = data.DataLoader(ds, batch_size=128, shuffle=False)
+    concat_data = None
+    concat_labels = None
+
+    for batch_idx, batch in enumerate(dl):
+        if use_gen_data:
+            img, name_label = batch
+        else:
+            img, name_label, pos_label = batch
+        input_img = img.to("cuda")
+        batch_embs = emb_model(input_img)
+        batch_embs = batch_embs.detach().cpu().numpy()
+        if batch_idx == 0:
+            concat_data = batch_embs
+            concat_labels = name_label
+            continue
+        concat_data = np.concatenate((concat_data, batch_embs), axis=0)
+        concat_labels = np.concatenate((concat_labels, name_label), axis=0)
+    np.savetext(
+        f"{PATH}/embeddings/embedding-{len(ds)}samples-{bool_dict[use_trainset]}.csv"
+    )
+    np.savetext(
+        f"{PATH}/embeddings/label-{len(ds)}samples-{bool_dict[use_trainset]}.csv"
+    )
+    return concat_data, concat_labels
+
+
 if __name__ == "__main__":
-    main("cuda", {"001": 0})
+    names = {
+        "002": 0,
+        "003": 1,
+        "004": 2,
+        "005": 3,
+        "006": 4,
+        "007": 5,
+        "008": 6,
+        "009": 7,
+        "010": 8,
+        "011": 9,
+        "012": 10,
+        "013": 11,
+        "014": 12,
+        "015": 13,
+        "016": 14,
+        "017": 15,
+        "018": 16,
+        "019": 17,
+        "020": 18,
+        "021": 19,
+        "022": 20,
+    }
+    main("cuda", names)
+    embds = emb_match(name_lookup_table=names, use_trainset=False)
+    print(embds[0][0])
