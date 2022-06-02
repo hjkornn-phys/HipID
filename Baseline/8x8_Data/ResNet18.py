@@ -5,9 +5,7 @@ import torch.nn.functional as F
 from torch.utils import data
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
-from torchsummary import summary as torchsumm
 from pathlib import Path
-
 from tqdm import tqdm
 import create_dataset
 
@@ -49,18 +47,18 @@ class ResNet(nn.Module):
         self, block=BasicBlock, num_blocks=[2, 2, 2, 2], *, in_channels, num_classes
     ):
         super(ResNet, self).__init__()
-        self.in_planes = 64
+        self.in_planes = 16
 
         # 64개의 3x3 필터(filter)를 사용
         self.conv1 = nn.Conv2d(
-            in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False
+            in_channels, 16, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.bn1 = nn.BatchNorm2d(64)
-        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
         # self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.linear = nn.Linear(256, num_classes)
+        self.linear = nn.Linear(64, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -82,12 +80,6 @@ class ResNet(nn.Module):
         return out
 
 
-def ResNet18(*, num_classes):
-    model = ResNet(BasicBlock, [1, 1, 1, 1], in_channel=1, num_classes=num_classes)
-    print(torchsumm(model), (1, 8, 8), 100)
-    return model
-
-
 class Trainer:
     def __init__(
         self,
@@ -101,14 +93,14 @@ class Trainer:
         train_epochs=15,
         results_folder="./backbone_results",
         adjust_lr=True,
-        num_blocks=[2, 2, 2, 2],
+        num_block=[2, 2, 2, 2],
     ) -> None:
         super().__init__()
         self.lookup_table = lookup_table
         self.num_classes = num_classes
         self.model = ResNet(
             BasicBlock,
-            num_blocks=num_blocks,
+            num_blocks=num_block,
             in_channels=in_channels,
             num_classes=self.num_classes,
         )
@@ -166,7 +158,7 @@ class Trainer:
             name = k[7:]  # remove `module.`
             model_weights[name] = v
         self.curr_epoch = data["epoch"]
-        self.model.load_state_dict(model_weights)
+        self.model.load_state_dict(data["model"])
         self.lookup_table = data["lookup_table"]
 
     def train(self, device, pred_target="name"):
@@ -176,7 +168,7 @@ class Trainer:
         tgt_dict = {"name": 1, "pos": 2}
         tgt_label = tgt_dict[pred_target]
         cudnn.benchmark = True
-        self.model = nn.DataParallel(self.model.to(device))
+        self.model = nn.DataParallel(self.model.to(device))  # 점검용
         optimizer = optim.SGD(
             self.model.parameters(), lr=self.train_lr, momentum=0.9, weight_decay=0.0002
         )
@@ -256,9 +248,8 @@ if __name__ == "__main__":
     trainer = Trainer(
         {"002": 0, "003": 1, "004": 2, "005": 3, "006": 4},
         train_batch_size=32,
-        num_classes=5,  # 사람을 예측할 때는 사람의 수, pos 예측에는 8로 고정
+        num_classes=9,
         train_epochs=15,
-        num_blocks=[2, 2, 2, 2],
     )
     # trainer.load(10, "name")  # 10번째 model을 불러와서 추가적으로 train_epoch만큼 훈련시킴
-    trainer.train("cuda", pred_target="name")  # 자세를 예측할 때에는 pred_target='pos'
+    trainer.train("cuda", pred_target="pos")

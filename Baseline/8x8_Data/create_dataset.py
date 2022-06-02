@@ -37,16 +37,25 @@ class Dataset(data.Dataset):
         if self.transform is None:
             self.transform = transforms.Compose(
                 [
-                    # transforms.Resize(image_size),
-                    # transforms.RandomHorizontalFlip(),
-                    # transforms.CenterCrop(image_size),
                     transforms.ToTensor(),
+                    transforms.RandomApply(
+                        torch.nn.ModuleList(
+                            [
+                                transforms.RandomResizedCrop(
+                                    8, (0.25, 1), ratio=(1, 1)
+                                ),
+                                transforms.GaussianBlur(3, sigma=(0.1, 2.0)),
+                            ]
+                        ),
+                        p=0.3,
+                    ),
                 ]
             )
 
     def __len__(self):
         return len(self.paths)
 
+    # import copy
     def __getitem__(self, index):
         path = self.paths[index]
         img = np.genfromtxt(path, dtype=np.int16, delimiter=",")  # 0~1023
@@ -123,7 +132,9 @@ def make_total_dataset(
 
 
 if __name__ == "__main__":
-    name_dict = {"002": 0, "003": 1}
+    name_dict = {
+        "002": 0,
+    }
     total_dataset = make_total_dataset(
         8,
         name_dict,
@@ -132,5 +143,6 @@ if __name__ == "__main__":
         use_name_as_label=False,
         is_train=True,
         use_gen_data=False,
+        is_barlow_twins=False,
     )
-    print(total_dataset[500])
+    print(total_dataset[200], total_dataset[200][0].shape)
