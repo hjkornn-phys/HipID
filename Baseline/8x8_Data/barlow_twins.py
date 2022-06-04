@@ -427,12 +427,12 @@ def emb_match(name_lookup_table, use_trainset, use_gen_data=False):
             continue
         concat_data = np.concatenate((concat_data, batch_embs), axis=0)
         concat_labels = np.concatenate((concat_labels, name_label), axis=0)
-    np.savetext(
+    np.savetxt(
         f"{PATH}/embeddings/embedding-{len(ds)}samples-{bool_dict[use_trainset]}.csv",
         concat_data,
         delimiter=",",
     )
-    np.savetext(
+    np.savetxt(
         f"{PATH}/embeddings/label-{len(ds)}samples-{bool_dict[use_trainset]}.csv",
         concat_labels,
         delimiter=",",
