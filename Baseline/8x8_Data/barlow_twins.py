@@ -16,6 +16,7 @@ from PIL import ImageFilter
 from torch.utils import data
 import numpy as np
 
+
 parser = argparse.ArgumentParser(description="Barlow Twins Training")
 parser.add_argument(
     "--backbone-num-blocks",
@@ -27,7 +28,7 @@ parser.add_argument(
 
 parser.add_argument(
     "--backbone_weights",
-    default="resnet18-pred_pos-9classes-12.pt",
+    default="resnet18-pred_pos-9classes-9.pt",
     type=Path,
     metavar="DIR",
     help="backbone weight filename (under best results)",
@@ -49,13 +50,13 @@ parser.add_argument(
 )
 parser.add_argument(
     "--epochs",
-    default=100,
+    default=110,
     type=int,
     metavar="N",
     help="number of total epochs to run",
 )
 parser.add_argument(
-    "--batch-size", default=64, type=int, metavar="N", help="mini-batch size"
+    "--batch-size", default=4, type=int, metavar="N", help="mini-batch size"
 )
 parser.add_argument(
     "--learning-rate-weights",
@@ -83,7 +84,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--projector",
-    default="256-256-256",
+    default="64-64",
     type=str,
     metavar="MLP",
     help="projector MLP",
@@ -116,11 +117,11 @@ class BarlowTwins(nn.Module):
             num_blocks=list(map(int, args.backbone_num_blocks.split("-"))),
             in_channels=1,
             num_classes=args.pretext_num_classes,
+            channel_depth=4,
         )
-        # self.backbone = nn.DataParallel(self.backbone)
 
         if args.backbone_weights is not None:
-            backbone_weights = torch.load("./best_results" / args.backbone_weights)
+            backbone_weights = torch.load("./backbone_results" / args.backbone_weights)
             model_weights = {}
             for k, v in backbone_weights["model"].items():
                 name = k[7:]  # remove `module.`
@@ -128,9 +129,10 @@ class BarlowTwins(nn.Module):
             self.backbone.load_state_dict(model_weights)
         self.backbone.linear = nn.Identity()
 
+        # self.backbone = nn.DataParallel(self.backbone)
         # projector
         projector_dims = list(map(int, args.projector.split("-")))
-        sizes = [64] + projector_dims
+        sizes = [16] + projector_dims
         layers = []
         for i in range(len(sizes) - 2):
             layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=False))
@@ -145,8 +147,6 @@ class BarlowTwins(nn.Module):
     def forward(self, y1, y2):
         z1 = self.projector(self.backbone(y1))
         z2 = self.projector(self.backbone(y2))
-        # print(z1.shape)    # 점검용
-        # print(z2.shape)    # 점검용
 
         # empirical cross-correlation matrix
         c = self.bn(z1).T @ self.bn(z2)
@@ -257,7 +257,7 @@ def main(gpu, name_lookup_table):
     else:
         start_epoch = 0
 
-    dataset = make_total_dataset(
+    total_ds = make_total_dataset(
         8,
         name_lookup_table=name_lookup_table,
         is_train=True,
@@ -265,17 +265,18 @@ def main(gpu, name_lookup_table):
         is_barlow_twins=True,
         transform=Transform(),
     )
-    print(len(dataset))
-    # sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-    # assert args.batch_size % args.world_size == 0
-    # per_device_batch_size = args.batch_size // args.world_size
+    train_ds, val_ds = data.random_split(
+        total_ds,
+        [int(len(total_ds) * 0.8), len(total_ds) - int(len(total_ds) * 0.8)],
+        generator=torch.Generator().manual_seed(42),
+    )
+
     loader = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size, num_workers=args.workers, pin_memory=True
+        train_ds, batch_size=args.batch_size, num_workers=args.workers, pin_memory=True
     )
     start_time = time.time()
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
-        # sampler.set_epoch(epoch)
         for step, ((y1, y2, *_)) in enumerate(loader):
             y1 = y1.cuda(gpu, non_blocking=True)
             y2 = y2.cuda(gpu, non_blocking=True)
@@ -338,31 +339,45 @@ class GaussianBlur(object):
 
 class Transform:
     def __init__(self):
+        # 0~1023 -> -1~1 sigma()
+        # 0~255 sigma(0.1, 2.0)
         self.transform = transforms.Compose(
             [
                 transforms.ToTensor(),
+                transforms.RandomResizedCrop(8, (0.25, 1), ratio=(1, 1)),
+                # transforms.RandomApply(
+                #     torch.nn.ModuleList(
+                #         torch.rot90(self.x, 2, [1,2]),
+                #     ),
+                # p = 0.5),
                 transforms.RandomApply(
                     torch.nn.ModuleList(
                         [
-                            transforms.RandomResizedCrop(8, (0.25, 1), ratio=(1, 1)),
-                            transforms.GaussianBlur(3, sigma=(0.1, 2.0)),
+                            transforms.GaussianBlur(3, sigma=(0.001, 0.005)),
+                            # transforms.RandomRotation(180),
                         ]
                     ),
-                    p=0.3,
+                    p=0.7,
                 ),
             ]
         )
         self.transform_prime = transforms.Compose(
             [
                 transforms.ToTensor(),
+                transforms.RandomResizedCrop(8, (0.25, 1), ratio=(1, 1)),
+                # transforms.RandomApply(
+                #     torch.nn.ModuleList(
+                #         torch.rot90(self.x, 2, [1,2]),
+                #     ),
+                # p = 0.5),
                 transforms.RandomApply(
                     torch.nn.ModuleList(
                         [
-                            transforms.RandomResizedCrop(8, (0.25, 1), ratio=(1, 1)),
                             transforms.GaussianBlur(3, sigma=(0.1, 2.0)),
+                            # transforms.RandomRotation(180),
                         ]
                     ),
-                    p=0.3,
+                    p=0.7,
                 ),
             ]
         )
@@ -385,40 +400,84 @@ class EmbExtractor(nn.Module):
         bt_weights = torch.load(args.checkpoint_dir / "checkpoint.pth")["model"]
         self.model.load_state_dict(bt_weights)
         self.model.eval()
-        if extract_emb is False:
-            self.fin_linear = nn.Linear(args.projector.split("-")[-1], num_classes)
+        # if extract_emb is False:
+        #     self.fin_linear = nn.Linear(args.projector.split("-")[-1], num_classes)
 
     def forward(self, x):
-        x = self.model.module.projector(self.model.module.backbone(x))
+        x = self.model.module.backbone(x)
         if self.extract_emb:
-            return x
-        x = self.fin_linear(x)
+            return self.model.module.projector(x)
         return x
 
 
-def emb_match(name_lookup_table, use_trainset, use_gen_data=False):
+def emb_match(name_lookup_table, extract_emb, use_gen_data=False):
     PATH = str(Path.cwd())
     Path.mkdir(Path(f"{PATH}/embeddings"), exist_ok=True)
-    bool_dict = {True: "train", False: "test"}
-    emb_model = EmbExtractor("cuda", extract_emb=True)
-    ds = make_total_dataset(
+    bool_dict = {True: "train", False: "validation"}
+    emb_dict = {True: "embedding", False: "RepVec"}
+    emb_model = EmbExtractor("cuda", extract_emb=extract_emb)
+    dataset_dict = {True: "Trainset", False: "Validationset"}
+    total_ds = make_total_dataset(
         8,
         name_lookup_table=name_lookup_table,
-        is_train=use_trainset,
+        is_train=True,
         transform=None,
         is_barlow_twins=False,
         use_gen_data=use_gen_data,
     )
-    dl = data.DataLoader(ds, batch_size=128, shuffle=False)
-    concat_data = None
-    concat_labels = None
+    splitted_ds = data.random_split(
+        total_ds,
+        [int(len(total_ds) * 0.8), len(total_ds) - int(len(total_ds) * 0.8)],
+        generator=torch.Generator().manual_seed(42),
+    )
+    splitted_ds[0], splitted_ds[1] = splitted_ds[1], splitted_ds[0]
+    test_ds = make_total_dataset(
+        8,
+        name_lookup_table=name_lookup_table,
+        is_train=False,
+        transform=None,
+        is_barlow_twins=False,
+        use_gen_data=False,
+    )
+    # Train, validation dataset(Po1~7, 9)의 representation 생성
+    for train_flag in [True, False]:
+        use_train = not train_flag
+        concat_data = None
+        concat_labels = None
+        dl = data.DataLoader(splitted_ds[use_train], batch_size=128, shuffle=False)
 
-    for batch_idx, batch in enumerate(dl):
+        for batch_idx, batch in enumerate(dl):
+            if use_gen_data:
+                img, name_label = batch
+            else:
+                img, name_label, pos_label = batch
+            input_img = img.to("cuda", dtype=torch.float)
+            batch_embs = emb_model(input_img)
+            batch_embs = batch_embs.detach().cpu().numpy()
+            if batch_idx == 0:
+                concat_data = batch_embs
+                concat_labels = name_label
+                continue
+            concat_data = np.concatenate((concat_data, batch_embs), axis=0)
+            concat_labels = np.concatenate((concat_labels, name_label), axis=0)
+        np.savetxt(
+            f"{PATH}/embeddings/{emb_dict[extract_emb]}-{len(splitted_ds[use_train])}samples-{bool_dict[use_train]}.csv",
+            concat_data,
+            delimiter=",",
+        )
+        np.savetxt(
+            f"{PATH}/embeddings/{emb_dict[extract_emb]}-label-{len(splitted_ds[use_train])}samples-{bool_dict[use_train]}.csv",
+            concat_labels,
+            delimiter=",",
+        )
+    # Test dataset(Po8)의 representation 생성
+    test_dl = data.DataLoader(test_ds, batch_size=128, shuffle=False)
+    for batch_idx, batch in enumerate(test_dl):
         if use_gen_data:
             img, name_label = batch
         else:
             img, name_label, pos_label = batch
-        input_img = img.to("cuda")
+        input_img = img.to("cuda", dtype=torch.float)
         batch_embs = emb_model(input_img)
         batch_embs = batch_embs.detach().cpu().numpy()
         if batch_idx == 0:
@@ -428,16 +487,16 @@ def emb_match(name_lookup_table, use_trainset, use_gen_data=False):
         concat_data = np.concatenate((concat_data, batch_embs), axis=0)
         concat_labels = np.concatenate((concat_labels, name_label), axis=0)
     np.savetxt(
-        f"{PATH}/embeddings/embedding-{len(ds)}samples-{bool_dict[use_trainset]}.csv",
+        f"{PATH}/embeddings/{emb_dict[extract_emb]}-{len(test_ds)}samples-test.csv",
         concat_data,
         delimiter=",",
     )
     np.savetxt(
-        f"{PATH}/embeddings/label-{len(ds)}samples-{bool_dict[use_trainset]}.csv",
+        f"{PATH}/embeddings/{emb_dict[extract_emb]}-label-{len(test_ds)}samples-test.csv",
         concat_labels,
         delimiter=",",
     )
-    return concat_data, concat_labels
+    return True
 
 
 if __name__ == "__main__":
@@ -463,7 +522,16 @@ if __name__ == "__main__":
         "020": 18,
         "021": 19,
         "022": 20,
+        "023": 21,
+        "024": 22,
+        "025": 23,
+        "026": 24,
+        "027": 25,
+        "028": 26,
+        "029": 27,
+        "030": 28,
+        "031": 29,
     }
     main("cuda", names)
-    embds = emb_match(name_lookup_table=names, use_trainset=False)
-    print(embds[0][0])
+    embds = emb_match(name_lookup_table=names, extract_emb=False)
+    # embds = emb_match(name_lookup_table=names, extract_emb = False, use_trainset=False)

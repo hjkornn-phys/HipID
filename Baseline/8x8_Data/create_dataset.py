@@ -5,6 +5,14 @@ from torchvision import transforms
 import torch
 
 
+def normalize_to_neg_one_to_one(img):
+    return img * 2 - 1
+
+
+def unnormalize_to_zero_to_one(t):
+    return (t + 1) * 0.5
+
+
 class Dataset(data.Dataset):
     def __init__(
         self,
@@ -34,10 +42,16 @@ class Dataset(data.Dataset):
                 np.array([(int(str(p).split("\\")[-1][2]) - 1) for p in self.paths]),
                 dtype=torch.long,
             )
-        if self.transform is None:
+        if self.transform is None:  # 훈련
             self.transform = transforms.Compose(
                 [
                     transforms.ToTensor(),
+                    transforms.RandomApply(
+                        [transforms.GaussianBlur(3, sigma=(0.1, 0.2))], p=0.9
+                    ),
+                    transforms.RandomErasing(
+                        p=0.8, scale=(9 / 64, 0.25), ratio=(1, 1), value=-1
+                    ),
                 ]
             )
 
@@ -48,23 +62,36 @@ class Dataset(data.Dataset):
     def __getitem__(self, index):
         path = self.paths[index]
         img = np.genfromtxt(path, dtype=np.int16, delimiter=",")  # 0~1023
+        img = np.divide(img, 1023).astype(np.float32)  # 0~1
+        img = normalize_to_neg_one_to_one(img)
         if self.is_barlow_twins:
             y1, y2 = self.transform(img)
+            p, q = torch.rand(2)
+            if p >= 0.5:
+                y1 = torch.rot90(y1, 2, (1, 2))
+            if q >= 0.5:
+                y2 = torch.rot90(y2, 2, (1, 2))
             return (
-                torch.div(y1, 1023),
-                torch.div(y2, 1023),
+                y1,
+                y2,
                 self.name_lookup_table[self.name],
             )  # 0~1 로 normalize
         else:
+            img = self.transform(img)
+            p = torch.rand(1)
+            if p >= 0.5:
+                img = torch.rot90(img, 2, (1, 2))
+
             if self.is_gen_data:
                 return (
-                    torch.div(self.transform(img), 1023),
+                    img,
                     self.name_lookup_table[self.name],
+                    torch.tensor(9),  # pos 예측에 사용불가
                 )  # 0~1 로 normalize
             else:
                 pos_label = self.pos_labels[index]
                 return (
-                    torch.div(self.transform(img), 1023),
+                    img,
                     self.name_lookup_table[self.name],
                     pos_label,
                 )  # 0~1 로 normalize
@@ -85,6 +112,12 @@ def make_total_dataset(
     Bool_dict = {True: "images", False: "test_images"}
     if folder is None:
         folder = PATH
+    if is_train is False:  # 테스트
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+            ]
+        )
     names = name_lookup_table.keys()
     total_dataset = data.ConcatDataset(
         [
@@ -100,7 +133,7 @@ def make_total_dataset(
             for name in names
         ]
     )
-    if is_train and use_gen_data:
+    if use_gen_data and is_train:
         gen_dataset = data.ConcatDataset(
             [
                 Dataset(
@@ -117,12 +150,33 @@ def make_total_dataset(
             ]
         )
         total_dataset = data.ConcatDataset([total_dataset, gen_dataset])
+
     return total_dataset
 
 
 if __name__ == "__main__":
     name_dict = {
         "002": 0,
+        "003": 1,
+        "004": 2,
+        "005": 3,
+        "006": 4,
+        "007": 5,
+        "008": 6,
+        "009": 7,
+        "010": 8,
+        "011": 9,
+        "012": 10,
+        "013": 11,
+        "014": 12,
+        "015": 13,
+        "016": 14,
+        "017": 15,
+        "018": 16,
+        "019": 17,
+        "020": 18,
+        "021": 19,
+        "022": 20,
     }
     total_dataset = make_total_dataset(
         8,
@@ -131,7 +185,7 @@ if __name__ == "__main__":
         exts=["csv"],
         use_name_as_label=False,
         is_train=True,
-        use_gen_data=False,
+        use_gen_data=True,
         is_barlow_twins=False,
     )
-    print(total_dataset[200], total_dataset[200][0].shape)
+    print(total_dataset[200], len(total_dataset))

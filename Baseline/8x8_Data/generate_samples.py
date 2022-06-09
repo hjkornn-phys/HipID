@@ -21,7 +21,7 @@ def gen_sample_from_model(name, n_samples=64, as_csv=True, unnormalize=True):
 
     trainer = Trainer(
         diffusion,
-        f"{PATH}\8x8_Data\gen_samples\\",
+        f"{PATH}\8x8_Data\{name}\\test_images",
         train_batch_size=4,
         train_lr=1e-4,
         train_num_steps=30000,  # total training steps
@@ -30,7 +30,7 @@ def gen_sample_from_model(name, n_samples=64, as_csv=True, unnormalize=True):
         amp=True,  # turn on mixed precision'
         results_folder=f"{PATH}\8x8_Data\{name}\\results",
     )
-    trainer.load(29)
+    trainer.load(35)
     trainer.ema_model.eval()
     gens = trainer.ema_model.sample(n_samples)
     gens = gens.detach().cpu().numpy()
@@ -48,7 +48,6 @@ def gen_sample_from_model(name, n_samples=64, as_csv=True, unnormalize=True):
 
     else:
         Path.mkdir(Path(f"{PATH}\8x8_Data\gen_samples"), exist_ok=True)
-        gens = gens.reshape(n_samples, 64)
         utils.save_image(
             gens,
             f"{PATH}\8x8_Data\gen_samples\\{name}_gen_samples.png",
@@ -77,5 +76,7 @@ def sample_from_real_data(name):
 
 
 if __name__ == "__main__":
-    gen_sample_from_model("You", 100, as_csv=True, unnormalize=False)
+    for i in range(2, 32):
+        name_str = "0" * (3 - len(str(i))) + str(i)
+        gen_sample_from_model(name_str, 3600, as_csv=True, unnormalize=True)
     # sample_from_real_data("You")
