@@ -8,6 +8,15 @@ import torch.optim as optim
 from pathlib import Path
 from tqdm import tqdm
 import create_dataset
+from sklearn.metrics import confusion_matrix, plot_confusion_matrix
+from sklearn.metrics import ConfusionMatrixDisplay
+from sklearn.metrics import classification_report
+from sklearn.cluster import KMeans
+from sklearn.manifold import TSNE
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class BasicBlock(nn.Module):
@@ -44,21 +53,31 @@ class BasicBlock(nn.Module):
 # ResNet 클래스 정의
 class ResNet(nn.Module):
     def __init__(
-        self, block=BasicBlock, num_blocks=[2, 2, 2, 2], *, in_channels, num_classes
+        self,
+        block=BasicBlock,
+        num_blocks=[2, 2, 2, 2],
+        *,
+        in_channels,
+        num_classes,
+        channel_depth=16,
     ):
         super(ResNet, self).__init__()
-        self.in_planes = 16
+        self.in_planes = channel_depth
 
         # 64개의 3x3 필터(filter)를 사용
         self.conv1 = nn.Conv2d(
-            in_channels, 16, kernel_size=3, stride=1, padding=1, bias=False
+            in_channels, channel_depth, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.bn1 = nn.BatchNorm2d(16)
-        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        self.bn1 = nn.BatchNorm2d(channel_depth)
+        self.layer1 = self._make_layer(block, channel_depth, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(
+            block, channel_depth * 2, num_blocks[1], stride=2
+        )
+        self.layer3 = self._make_layer(
+            block, channel_depth * 4, num_blocks[2], stride=2
+        )
         # self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.linear = nn.Linear(64, num_classes)
+        self.linear = nn.Linear(channel_depth * 4, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -94,6 +113,8 @@ class Trainer:
         results_folder="./backbone_results",
         adjust_lr=True,
         num_block=[2, 2, 2, 2],
+        channel_depth=16,
+        use_gen_data=False,
     ) -> None:
         super().__init__()
         self.lookup_table = lookup_table
@@ -103,20 +124,34 @@ class Trainer:
             num_blocks=num_block,
             in_channels=in_channels,
             num_classes=self.num_classes,
+            channel_depth=channel_depth,
         )
+        self.channel_depth = channel_depth
         self.batch_size = train_batch_size
         self.train_lr = train_lr
         self.loss_fn = loss_fn
         self.train_epochs = train_epochs
         self.img_size = img_size
-        self.train_ds = create_dataset.make_total_dataset(
-            self.img_size, self.lookup_table, is_train=True
+        self.total_ds = create_dataset.make_total_dataset(
+            self.img_size, self.lookup_table, is_train=True, use_gen_data=use_gen_data
         )
+        self.train_ds, self.val_ds = data.random_split(
+            self.total_ds,
+            [
+                int(len(self.total_ds) * 0.8),
+                len(self.total_ds) - int(len(self.total_ds) * 0.8),
+            ],
+            generator=torch.Generator().manual_seed(42),
+        )
+
         self.test_ds = create_dataset.make_total_dataset(
             self.img_size, self.lookup_table, is_train=False
         )
         self.train_dl = data.DataLoader(
             self.train_ds, batch_size=self.batch_size, shuffle=True, pin_memory=True
+        )
+        self.val_dl = data.DataLoader(
+            self.val_ds, batch_size=self.batch_size, shuffle=False, pin_memory=True
         )
         self.test_dl = data.DataLoader(
             self.test_ds, batch_size=128, shuffle=False, pin_memory=True
@@ -139,7 +174,7 @@ class Trainer:
             data,
             str(
                 self.results_folder
-                / f"resnet18-pred_{pred_target}-{self.num_classes}classes-{milestone}.pt"
+                / f"resnet18-{self.channel_depth*4}channels-pred_{pred_target}-{self.num_classes}classes-{milestone}.pt"
             ),
         )
 
@@ -150,7 +185,7 @@ class Trainer:
         data = torch.load(
             str(
                 self.results_folder
-                / f"resnet18-pred_{pred_target}-{self.num_classes}classes-{milestone}.pt"
+                / f"resnet18-{self.channel_depth*4}channels-pred_{pred_target}-{self.num_classes}classes-{milestone}.pt"
             ),
         )
         model_weights = {}
@@ -158,7 +193,7 @@ class Trainer:
             name = k[7:]  # remove `module.`
             model_weights[name] = v
         self.curr_epoch = data["epoch"]
-        self.model.load_state_dict(data["model"])
+        self.model.load_state_dict(model_weights)
         self.lookup_table = data["lookup_table"]
 
     def train(self, device, pred_target="name"):
@@ -168,18 +203,29 @@ class Trainer:
         tgt_dict = {"name": 1, "pos": 2}
         tgt_label = tgt_dict[pred_target]
         cudnn.benchmark = True
-        self.model = nn.DataParallel(self.model.to(device))  # 점검용
-        optimizer = optim.SGD(
-            self.model.parameters(), lr=self.train_lr, momentum=0.9, weight_decay=0.0002
+        self.model = nn.DataParallel(self.model.to(device, dtype=torch.float))  # 점검용
+        # optimizer = optim.RMSprop(
+        #     self.model.parameters(),
+        #     lr=self.train_lr,
+        #     # lr_decay=0.003,
+        #     weight_decay=0.0002,
+        #     momentum=0.3,
+        # )
+        optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=self.train_lr,
+            # lr_decay=0.003,
+            weight_decay=0.0002,
         )
+
         with tqdm(
             initial=self.curr_epoch, total=init_epoch + self.train_epochs
         ) as pbar:
             while self.curr_epoch <= init_epoch + self.train_epochs:
                 # adjust learning rate
-                if self.curr_epoch == 5 and self.adjust_lr == True:
-                    for param_group in optimizer.param_groups:
-                        param_group["lr"] = self.train_lr / 10
+                # if self.curr_epoch == 5 and self.adjust_lr == True:
+                #     for param_group in optimizer.param_groups:
+                #         param_group["lr"] = self.train_lr / 10
 
                 # train
                 self.model.train()
@@ -189,7 +235,7 @@ class Trainer:
                 for batch_idx, batch in enumerate(
                     self.train_dl
                 ):  # batch = (inputs, name_label, pos_label)
-                    inputs = batch[0].to(device)
+                    inputs = batch[0].to(device, dtype=torch.float)
                     target = batch[tgt_label].to(device)
                     total += target.size(0)
                     optimizer.zero_grad()
@@ -210,21 +256,18 @@ class Trainer:
                             "Current benign train accuracy:",
                             str(pred.eq(target).sum().item() / target.size(0)),
                         )
-                        print("Current benign train loss:", 100 * loss.item())
+                        print("Current benign train loss:", train_loss / total)
 
-                print("\nTotal benign train accuarcy:", 100.0 * correct / total)
-                print("Total benign train loss:", train_loss)
-
-                # test
-                print("\n[ Test epoch: %d ]" % self.curr_epoch)
+                # validation
+                print("\n[ Val epoch: %d ]" % self.curr_epoch)
                 self.model.eval()
                 loss = 0
                 correct = 0
                 total = 0
                 for batch_idx, batch in enumerate(
-                    self.test_dl
+                    self.val_dl
                 ):  # batch = (inputs, name_label, pos_label)
-                    inputs = batch[0].to(device)
+                    inputs = batch[0].to(device, dtype=torch.float)
                     target = batch[tgt_label].to(device)
                     total += target.size(0)
 
@@ -234,8 +277,8 @@ class Trainer:
                     _, predicted = outputs.max(1)
                     correct += predicted.eq(target).sum().item()
 
-                print("\nTest accuarcy:", 100.0 * correct / total)
-                print("Test average loss:", loss / total)
+                print("\nValidation accuarcy:", correct / total)
+                print("Validation average loss:", loss / total)
                 self.save(milestone=self.curr_epoch, pred_target=pred_target)
                 print("Model Saved!")
 
@@ -243,13 +286,112 @@ class Trainer:
                 self.curr_epoch += 1
                 pbar.update(1)
 
+            print("\nTotal benign train accuarcy:", 100.0 * correct / total)
+            print("Total benign train loss:", train_loss)
+
+    def evaluate(self, device, milestone, pred_target):
+        self.load(milestone=milestone, pred_target=pred_target)
+        print(f"Model loaded - milestone: {milestone}")
+        tgt_dict = {"name": 1, "pos": 2}
+        tgt_label = tgt_dict[pred_target]
+        self.model.to(device=device)
+        self.model.eval()
+        # Test
+        concat_preds = []
+        concat_targets = []
+        print("\n[ Test epoch: %d ]" % self.curr_epoch)
+        loss = 0
+        correct = 0
+        total = 0
+        for batch_idx, batch in enumerate(
+            self.test_dl
+        ):  # batch = (inputs, name_label, pos_label)
+            inputs = batch[0].to(device, dtype=torch.float)
+            target = batch[tgt_label].to(device)
+            total += target.size(0)
+
+            outputs = self.model(inputs)
+            loss += self.loss_fn(outputs, target).item()
+
+            _, predicted = outputs.max(1)
+            correct += predicted.eq(target).sum().item()
+
+            predicted = predicted.detach().cpu().numpy()
+            target = target.detach().cpu().numpy()
+
+            concat_preds.extend(predicted)
+            concat_targets.extend(target)
+
+        concat_preds = np.array(concat_preds)
+        concat_targets = np.array(concat_targets)
+        y_test = concat_targets
+        y_pred = concat_preds
+        report = classification_report(y_test, y_pred, digits=2)
+        Path.mkdir(Path("./classification_reports"), exist_ok=True)
+        with open(
+            "./classification_reports/classification_report_ResNet18.txt", "w"
+        ) as text_file:
+            print(report, file=text_file)  # f1-score 파일 저장
+        print(report)  # f1-score 출력
+
+        # Confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+        sns.set(rc={"figure.figsize": (40, 40)})
+        fig, axes = plt.subplots(nrows=1, ncols=1)
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes)
+        plt.xlabel("Prediction")
+        plt.ylabel("Ground Truth")
+        plt.title("Confusion matrix", fontsize=20)
+        plt.savefig("./classification_reports/BT_CM_ResNet18.png")
+
+        print("\nTest accuarcy:", correct / total)
+        print("Test average loss:", loss / total)
+
 
 if __name__ == "__main__":
     trainer = Trainer(
-        {"002": 0, "003": 1, "004": 2, "005": 3, "006": 4},
+        {
+            "002": 0,
+            # "003": 1,
+            "004": 1,
+            # "005": 3,
+            # "006": 4,
+            # "007": 5,
+            "008": 2,
+            "009": 3,
+            "010": 4,
+            "011": 5,
+            # "012": 10,
+            # "013": 11,
+            # "014": 12,
+            # "015": 13,
+            # "016": 14,
+            # "017": 15,
+            "018": 6,
+            "019": 7,
+            "020": 8,
+            "021": 9,
+            "022": 10,
+            "023": 11,
+            "024": 12,
+            # "025": 23,
+            # "026": 24,
+            "027": 13,
+            # "028": 26,
+            # "029": 27,
+            # "030": 28,
+            # "031": 29,
+        },
         train_batch_size=32,
-        num_classes=9,
-        train_epochs=15,
+        num_classes=14,
+        train_epochs=100,
+        num_block=[2, 2, 2, 2],
+        channel_depth=16,
+        use_gen_data=False,
+        train_lr=0.001,
     )
     # trainer.load(10, "name")  # 10번째 model을 불러와서 추가적으로 train_epoch만큼 훈련시킴
-    trainer.train("cuda", pred_target="pos")
+    # trainer.train("cuda", pred_target="name")
+    trainer.evaluate("cuda", 15, "name")
+    trainer.evaluate("cuda", 21, "name")
+    trainer.evaluate("cuda", 24, "name")
